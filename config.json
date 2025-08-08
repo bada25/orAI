@@ -1,0 +1,15 @@
+{
+  "directories_to_scan": [
+    "/Users/obsa/Downloads"
+  ],
+  "large_file_threshold_mb": 1,
+  "old_file_threshold_days": 30,
+  "excluded_folders": [
+    ".git",
+    "node_modules"
+  ],
+  "excluded_file_types": [
+    ".tmp",
+    ".log"
+  ]
+}

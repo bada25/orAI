@@ -38,35 +38,17 @@ def load_config() -> Dict:
         with open('config.json', 'r') as f:
             config = json.load(f)
             
-        # Phase 2 compatibility: adapt config structure
-        if 'directories_to_scan' in config:
-            # Phase 2 config format
-            adapted_config = {
-                "scan_paths": config.get('directories_to_scan', []),
-                "size_threshold_mb": config.get('large_file_threshold_mb', 100),
-                "age_threshold_days": config.get('old_file_threshold_days', 365),
-                "exclusions": {
-                    "folders": config.get('excluded_folders', []),
-                    "extensions": config.get('excluded_file_types', [])
-                },
-                "demo_mode": False
-            }
-            return adapted_config
-        else:
-            # Phase 4 config format
-            return config
+        # Return the original config structure for Phase 2 compatibility
+        return config
             
     except FileNotFoundError:
         # Create default config if file doesn't exist
         default_config = {
-            "scan_paths": ["demo_data"],
-            "size_threshold_mb": 10,
-            "age_threshold_days": 30,
-            "exclusions": {
-                "folders": [".git", "node_modules"],
-                "extensions": [".tmp", ".log"]
-            },
-            "demo_mode": False
+            "directories_to_scan": ["demo_data"],
+            "large_file_threshold_mb": 100,
+            "old_file_threshold_days": 365,
+            "excluded_folders": [".git", "node_modules"],
+            "excluded_file_types": [".tmp", ".log"]
         }
         save_config(default_config)
         return default_config
@@ -129,7 +111,12 @@ def find_duplicates(paths: List[str]) -> List[List[str]]:
         List of duplicate file groups (each group is a list of file paths)
     """
     config = load_config()
-    files = scan_files(paths, config["exclusions"])
+    # Convert Phase 2 exclusions to Phase 4 format
+    exclusions = {
+        "folders": config.get("excluded_folders", []),
+        "extensions": config.get("excluded_file_types", [])
+    }
+    files = scan_files(paths, exclusions)
     
     # Group files by hash
     hash_groups = {}
@@ -160,7 +147,12 @@ def find_large_files(paths: List[str], threshold_mb: float) -> List[Tuple[str, f
         List of tuples (file_path, size_mb)
     """
     config = load_config()
-    files = scan_files(paths, config["exclusions"])
+    # Convert Phase 2 exclusions to Phase 4 format
+    exclusions = {
+        "folders": config.get("excluded_folders", []),
+        "extensions": config.get("excluded_file_types", [])
+    }
+    files = scan_files(paths, exclusions)
     large_files = []
     
     for file_path in files:
@@ -188,7 +180,12 @@ def find_old_files(paths: List[str], threshold_days: int) -> List[Tuple[str, str
         List of tuples (file_path, last_modified_date)
     """
     config = load_config()
-    files = scan_files(paths, config["exclusions"])
+    # Convert Phase 2 exclusions to Phase 4 format
+    exclusions = {
+        "folders": config.get("excluded_folders", []),
+        "extensions": config.get("excluded_file_types", [])
+    }
+    files = scan_files(paths, exclusions)
     old_files = []
     
     current_time = datetime.datetime.now()
@@ -217,7 +214,12 @@ def find_empty_files(paths: List[str]) -> List[str]:
         List of file paths
     """
     config = load_config()
-    files = scan_files(paths, config["exclusions"])
+    # Convert Phase 2 exclusions to Phase 4 format
+    exclusions = {
+        "folders": config.get("excluded_folders", []),
+        "extensions": config.get("excluded_file_types", [])
+    }
+    files = scan_files(paths, exclusions)
     empty_files = []
     
     for file_path in files:
@@ -245,7 +247,12 @@ def find_near_duplicate_images(paths: List[str], similarity_threshold: int = 5) 
         return {}
     
     config = load_config()
-    files = scan_files(paths, config["exclusions"])
+    # Convert Phase 2 exclusions to Phase 4 format
+    exclusions = {
+        "folders": config.get("excluded_folders", []),
+        "extensions": config.get("excluded_file_types", [])
+    }
+    files = scan_files(paths, exclusions)
     image_files = [f for f in files if f.suffix.lower() in ['.png', '.jpg', '.jpeg', '.bmp', '.gif']]
     
     # Group images by hash
@@ -305,19 +312,31 @@ def find_blurry_images(paths: List[str], blur_threshold: float = 100.0) -> List[
         return []
     
     config = load_config()
-    files = scan_files(paths, config["exclusions"])
+    # Convert Phase 2 exclusions to Phase 4 format
+    exclusions = {
+        "folders": config.get("excluded_folders", []),
+        "extensions": config.get("excluded_file_types", [])
+    }
+    files = scan_files(paths, exclusions)
     image_files = [f for f in files if f.suffix.lower() in ['.png', '.jpg', '.jpeg', '.bmp', '.gif']]
     
     blurry_files = []
+    
     for file_path in image_files:
         try:
+            # Read image with OpenCV
             img = cv2.imread(str(file_path))
-            if img is not None:
-                gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-                laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
+            if img is None:
+                continue
                 
-                if laplacian_var < blur_threshold:
-                    blurry_files.append((str(file_path), laplacian_var))
+            # Convert to grayscale
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            
+            # Calculate Laplacian variance
+            laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
+            
+            if laplacian_var < blur_threshold:
+                blurry_files.append((str(file_path), laplacian_var))
         except Exception:
             continue
     
@@ -436,7 +455,7 @@ def generate_report(duplicates: List[List[str]],
 def run_demo_scan() -> Dict:
     """Run a complete demo scan with all detection rules."""
     config = load_config()
-    config["scan_paths"] = ["demo_data"]
+    config["directories_to_scan"] = ["demo_data"]
     config["demo_mode"] = True
     
     print("🎯 CleanSlate Phase 4 - Demo Mode")
@@ -444,12 +463,12 @@ def run_demo_scan() -> Dict:
     print("-" * 50)
     
     # Run all detection rules
-    duplicates = find_duplicates(config['scan_paths'])
-    large_files = find_large_files(config['scan_paths'], config['size_threshold_mb'])
-    old_files = find_old_files(config['scan_paths'], config['age_threshold_days'])
-    empty_files = find_empty_files(config['scan_paths'])
-    near_duplicates = find_near_duplicate_images(config['scan_paths'])
-    blurry_files = find_blurry_images(config['scan_paths'])
+    duplicates = find_duplicates(config['directories_to_scan'])
+    large_files = find_large_files(config['directories_to_scan'], config['large_file_threshold_mb'])
+    old_files = find_old_files(config['directories_to_scan'], config['old_file_threshold_days'])
+    empty_files = find_empty_files(config['directories_to_scan'])
+    near_duplicates = find_near_duplicate_images(config['directories_to_scan'])
+    blurry_files = find_blurry_images(config['directories_to_scan'])
     
     # Generate report
     report = generate_report(duplicates, large_files, old_files, 
@@ -488,22 +507,28 @@ def run_scan(config: Dict) -> Dict:
         Dictionary containing scan results in Phase 2 format
     """
     print("CleanSlate Phase 4 - Scanning...")
-    print(f"Scanning paths: {config['scan_paths']}")
-    print(f"Size threshold: {config['size_threshold_mb']} MB")
-    print(f"Age threshold: {config['age_threshold_days']} days")
+    print(f"Scanning paths: {config['directories_to_scan']}")
+    print(f"Size threshold: {config['large_file_threshold_mb']} MB")
+    print(f"Age threshold: {config['old_file_threshold_days']} days")
     print("-" * 50)
     
+    # Convert Phase 2 exclusions to Phase 4 format
+    exclusions = {
+        "folders": config.get("excluded_folders", []),
+        "extensions": config.get("excluded_file_types", [])
+    }
+    
     # Count total files scanned
-    all_files = scan_files(config['scan_paths'], config['exclusions'])
+    all_files = scan_files(config['directories_to_scan'], exclusions)
     total_files = len(all_files)
     
     # Run all detection rules
-    duplicates_raw = find_duplicates(config['scan_paths'])
-    large_files = find_large_files(config['scan_paths'], config['size_threshold_mb'])
-    old_files = find_old_files(config['scan_paths'], config['age_threshold_days'])
-    empty_files = find_empty_files(config['scan_paths'])
-    near_duplicates = find_near_duplicate_images(config['scan_paths'])
-    blurry_files = find_blurry_images(config['scan_paths'])
+    duplicates_raw = find_duplicates(config['directories_to_scan'])
+    large_files = find_large_files(config['directories_to_scan'], config['large_file_threshold_mb'])
+    old_files = find_old_files(config['directories_to_scan'], config['old_file_threshold_days'])
+    empty_files = find_empty_files(config['directories_to_scan'])
+    near_duplicates = find_near_duplicate_images(config['directories_to_scan'])
+    blurry_files = find_blurry_images(config['directories_to_scan'])
     
     # Convert duplicates to Phase 2 format (dict with group keys)
     duplicates = {}

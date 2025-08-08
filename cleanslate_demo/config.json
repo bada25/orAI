@@ -1,0 +1,18 @@
+{
+  "scan_paths": [
+    "demo_data"
+  ],
+  "size_threshold_mb": 10,
+  "age_threshold_days": 30,
+  "exclusions": {
+    "folders": [
+      ".git",
+      "node_modules"
+    ],
+    "extensions": [
+      ".tmp",
+      ".log"
+    ]
+  },
+  "demo_mode": false
+}

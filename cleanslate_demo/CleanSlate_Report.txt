@@ -1,0 +1,39 @@
+CleanSlate Phase 4 - File Scan Report
+==================================================
+Generated: 2025-08-07 17:37:33
+
+DUPLICATE FILES
+--------------------
+Group 1:
+  demo_data/test1.txt
+  demo_data/test2.txt
+
+
+LARGE FILES
+--------------------
+No large files found.
+
+OLD FILES
+--------------------
+No old files found.
+
+EMPTY FILES
+--------------------
+No empty files found.
+
+NEAR-DUPLICATE IMAGES
+--------------------
+No near-duplicate images found.
+
+BLURRY IMAGES
+--------------------
+No blurry images found.
+
+SUMMARY
+--------------------
+Duplicate groups: 1
+Large files: 0
+Old files: 0
+Empty files: 0
+Near-duplicate image groups: 0
+Blurry images: 0
