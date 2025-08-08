@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-CleanSlate MVP - Privacy-First Desktop File Cleaner
-A local, offline tool to help users find and delete unneeded files.
+LocalMind - Smart file cleanup. 100% offline. AI that tidies your computer without touching the cloud.
+A privacy-first, local desktop application that helps you find and delete unneeded files.
 """
 
 import os
@@ -10,6 +10,8 @@ import sqlite3
 import hashlib
 import csv
 import threading
+import json
+import base64
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
@@ -20,13 +22,101 @@ from send2trash import send2trash
 sg.set_options(icon=None, window_icon=None)
 
 # Constants
-DB_PATH = Path.home() / ".cleanslate_mvp.sqlite3"
+APP_NAME = "LocalMind"
+DB_PATH = Path.home() / ".localmind_mvp.sqlite3"
+LICENSE_PATH = Path.home() / ".localmind_license.json"
 SCAN_CHUNK_SIZE = 4 * 1024 * 1024  # 4 MB for partial hash
 LARGE_FILE_THRESHOLD = 50 * 1024 * 1024  # 50 MB
 OLD_FILE_THRESHOLD = 180  # days
 MAX_SIZE_SCORE = 10
 MAX_AGE_SCORE = 10
 MAX_EXTENSION_BIAS = 10
+
+# Public key for license verification (placeholder - replace with actual key)
+LICENSE_PUBLIC_KEY = """
+-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA...
+-----END PUBLIC KEY-----
+"""
+
+
+class LicenseManager:
+    """Manages license validation and storage."""
+    
+    def __init__(self):
+        """Initialize license manager."""
+        self.license_data = None
+        self.is_valid = False
+    
+    def check_license(self) -> bool:
+        """Check if a valid license exists."""
+        try:
+            if not LICENSE_PATH.exists():
+                return False
+            
+            with open(LICENSE_PATH, 'r') as f:
+                self.license_data = json.load(f)
+            
+            # Validate license (simplified for MVP - replace with actual crypto)
+            if self._validate_license_data(self.license_data):
+                self.is_valid = True
+                return True
+            
+        except Exception:
+            pass
+        
+        return False
+    
+    def _validate_license_data(self, data: Dict) -> bool:
+        """Validate license data (placeholder implementation)."""
+        # For MVP, accept any license file with required fields
+        required_fields = ['license_key', 'email', 'expires']
+        return all(field in data for field in required_fields)
+    
+    def activate_license(self, license_key: str) -> bool:
+        """Activate license with provided key."""
+        try:
+            # For MVP, accept any non-empty key
+            if not license_key.strip():
+                return False
+            
+            # Create license data
+            license_data = {
+                'license_key': license_key,
+                'email': 'user@example.com',  # Would be extracted from license
+                'expires': (datetime.now() + timedelta(days=365)).isoformat(),
+                'activated': datetime.now().isoformat()
+            }
+            
+            # Save license
+            with open(LICENSE_PATH, 'w') as f:
+                json.dump(license_data, f, indent=2)
+            
+            self.license_data = license_data
+            self.is_valid = True
+            return True
+            
+        except Exception:
+            return False
+    
+    def load_license_file(self, file_path: str) -> bool:
+        """Load license from file."""
+        try:
+            with open(file_path, 'r') as f:
+                license_data = json.load(f)
+            
+            if self._validate_license_data(license_data):
+                with open(LICENSE_PATH, 'w') as f:
+                    json.dump(license_data, f, indent=2)
+                
+                self.license_data = license_data
+                self.is_valid = True
+                return True
+                
+        except Exception:
+            pass
+        
+        return False
 
 
 class CleanSlateDB:
@@ -274,11 +364,100 @@ class FileScanner:
                 self.group_counter += 1
 
 
-class CleanSlateGUI:
+class LicenseActivationWindow:
+    """License activation window."""
+    
+    def __init__(self):
+        """Initialize license activation window."""
+        sg.theme('LightGrey1')
+    
+    def show(self) -> bool:
+        """Show license activation window and return True if activated."""
+        layout = [
+            [sg.Text(f"{APP_NAME}", font=("Helvetica", 20, "bold"))],
+            [sg.Text("Smart file cleanup. 100% offline. AI that tidies your computer without touching the cloud.", 
+                    font=("Helvetica", 10), text_color='gray')],
+            [sg.HSeparator()],
+            [sg.Text("Enter License Key", font=("Helvetica", 12, "bold"))],
+            [sg.Text("You can purchase LocalMind at localmindit.com")],
+            [sg.Input(key="-LICENSE-", size=(50, 1))],
+            [
+                sg.Button("Paste Key", key="-PASTE-"),
+                sg.Button("Load License File", key="-LOAD-")
+            ],
+            [sg.HSeparator()],
+            [
+                sg.Button("Activate", key="-ACTIVATE-", size=(10, 1)),
+                sg.Button("Exit", key="-EXIT-", size=(10, 1))
+            ]
+        ]
+        
+        window = sg.Window(
+            f"{APP_NAME} - License Activation",
+            layout,
+            modal=True,
+            finalize=True
+        )
+        
+        license_manager = LicenseManager()
+        
+        while True:
+            event, values = window.read()
+            
+            if event in (sg.WIN_CLOSED, "-EXIT-"):
+                window.close()
+                return False
+            
+            elif event == "-PASTE-":
+                try:
+                    clipboard = window.TKroot.clipboard_get()
+                    window["-LICENSE-"].update(clipboard)
+                except:
+                    pass
+            
+            elif event == "-LOAD-":
+                filename = sg.popup_get_file(
+                    "Select License File",
+                    file_types=(("JSON files", "*.json"), ("All files", "*.*"))
+                )
+                if filename:
+                    if license_manager.load_license_file(filename):
+                        sg.popup("License activated successfully!")
+                        window.close()
+                        return True
+                    else:
+                        sg.popup_error("Invalid license file!")
+            
+            elif event == "-ACTIVATE-":
+                license_key = values.get("-LICENSE-", "").strip()
+                if not license_key:
+                    sg.popup_error("Please enter a license key!")
+                    continue
+                
+                if license_manager.activate_license(license_key):
+                    sg.popup("License activated successfully!")
+                    window.close()
+                    return True
+                else:
+                    sg.popup_error("Invalid license key!")
+        
+        window.close()
+        return False
+
+
+class LocalMindGUI:
     """Main GUI application."""
     
     def __init__(self):
         """Initialize the GUI."""
+        self.license_manager = LicenseManager()
+        
+        # Check license first
+        if not self.license_manager.check_license():
+            activation_window = LicenseActivationWindow()
+            if not activation_window.show():
+                sys.exit(0)
+        
         self.db = CleanSlateDB(DB_PATH)
         self.scanner = FileScanner(self.db)
         self.current_files = []
@@ -363,7 +542,7 @@ class CleanSlateGUI:
         ]
         
         return sg.Window(
-            "CleanSlate MVP",
+            f"{APP_NAME}",
             layout,
             resizable=True,
             finalize=True
@@ -619,7 +798,7 @@ class CleanSlateGUI:
 def main():
     """Main entry point."""
     try:
-        app = CleanSlateGUI()
+        app = LocalMindGUI()
         app.run()
     except Exception as e:
         sg.popup_error(f"Application error: {str(e)}")

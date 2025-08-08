@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-CleanSlate Phase 3 - GUI Interface
-Cross-platform GUI wrapper for the CleanSlate file scanning engine.
+LocalMind Phase 3 - GUI Interface
+Cross-platform GUI wrapper for the LocalMind file scanning engine.
 """
 
 import os
@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 import PySimpleGUI as sg
 from typing import Dict, List, Optional, Tuple
+from datetime import datetime
 
 # Suppress Tkinter deprecation warnings on macOS
 os.environ['TK_SILENCE_DEPRECATION'] = '1'
@@ -66,6 +67,7 @@ from cleanslate_core import (
 )
 
 # Constants
+APP_NAME = "LocalMind"
 DEFAULT_CONFIG = {
     "directories_to_scan": [],
     "large_file_threshold_mb": 100,
@@ -75,415 +77,332 @@ DEFAULT_CONFIG = {
     "exclude_paths": []
 }
 
-class CleanSlateGUI:
-    """Main GUI wrapper for CleanSlate."""
-    
+
+class LocalMindGUI:
+    """Main GUI wrapper for LocalMind."""
+
     def __init__(self):
         """Initialize the GUI with default settings."""
         self.config = self._load_or_create_config()
         self.current_results = None
         self.window = None
-        
+
         # Set theme
         sg.theme('LightGrey1')
-    
+
     def _load_or_create_config(self) -> Dict:
-        """Load config or create with defaults if missing."""
+        """Load existing config or create default config."""
         try:
             cfg = load_config()
-        except (FileNotFoundError, json.JSONDecodeError):
+            # Ensure optional keys exist
+            if "exclude_paths" not in cfg:
+                cfg["exclude_paths"] = []
+            return cfg
+        except Exception:
+            # Create default config
             save_config(DEFAULT_CONFIG)
-            cfg = DEFAULT_CONFIG.copy()
-        # Ensure optional keys exist
-        if "exclude_paths" not in cfg:
-            cfg["exclude_paths"] = []
-        if "excluded_folders" not in cfg:
-            cfg["excluded_folders"] = []
-        if "excluded_file_types" not in cfg:
-            cfg["excluded_file_types"] = []
-        return cfg
-    
+            return DEFAULT_CONFIG.copy()
+
     def _create_layout(self) -> List[List[sg.Element]]:
         """Create the main window layout."""
-        # File Selection Section
-        file_section = [
-            [sg.Text("Directories to Scan:")],
-            [
-                sg.Listbox(
-                    values=self.config["directories_to_scan"],
-                    size=(50, 4),
-                    key="-DIRS-",
-                    enable_events=True
-                ),
-                sg.Column([
-                    [sg.Button("Add", key="-ADD-")],
-                    [sg.Button("Remove", key="-REMOVE-")]
-                ])
-            ],
-            [sg.Checkbox("Test mode (use demo_data)", key="-TESTMODE-", default=False)]
+        # Header
+        header = [
+            [sg.Text(f"{APP_NAME}", font=("Helvetica", 16, "bold"))],
+            [sg.Text("Smart file cleanup. 100% offline. AI that tidies your computer without touching the cloud.", 
+                    font=("Helvetica", 10), text_color='gray')],
+            [sg.HSeparator()]
         ]
-        
-        # Settings Section
-        settings_section = [
-            [sg.Text("Settings:")],
+
+        # Folder selection
+        folder_section = [
+            [sg.Text("Select folders to scan:", font=("Helvetica", 12, "bold"))],
+            [sg.Listbox(values=self.config.get("directories_to_scan", []), 
+                       size=(60, 4), key="-FOLDERS-", enable_events=True)],
             [
-                sg.Text("Large File Threshold (MB):"),
-                sg.Input(
-                    default_text=str(self.config["large_file_threshold_mb"]),
-                    size=(10, 1),
-                    key="-SIZE-"
-                )
-            ],
-            [
-                sg.Text("Old File Threshold (days):"),
-                sg.Input(
-                    default_text=str(self.config["old_file_threshold_days"]),
-                    size=(10, 1),
-                    key="-DAYS-"
-                )
-            ],
-            [sg.Text("Excluded Folders:")],
-            [
-                sg.Listbox(
-                    values=self.config["excluded_folders"],
-                    size=(30, 3),
-                    key="-EXCLUDE-FOLDERS-"
-                ),
-                sg.Column([
-                    [sg.Button("Add", key="-ADD-FOLDER-")],
-                    [sg.Button("Remove", key="-REMOVE-FOLDER-")]
-                ])
-            ],
-            [sg.Text("Excluded File Types:")],
-            [
-                sg.Listbox(
-                    values=self.config["excluded_file_types"],
-                    size=(30, 3),
-                    key="-EXCLUDE-TYPES-"
-                ),
-                sg.Column([
-                    [sg.Button("Add", key="-ADD-TYPE-")],
-                    [sg.Button("Remove", key="-REMOVE-TYPE-")]
-                ])
-            ],
-            [sg.Text("Exclude Paths (one per line):")],
-            [
-                sg.Multiline(
-                    default_text="\n".join(self.config.get("exclude_paths", [])),
-                    size=(50, 4),
-                    key="-EXCLUDE-PATHS-"
-                )
+                sg.Button("Add Folder", key="-ADD_FOLDER-"),
+                sg.Button("Remove Selected", key="-REMOVE_FOLDER-")
             ]
         ]
-        
-        # Results Table
+
+        # Settings
+        settings_section = [
+            [sg.Text("Settings:", font=("Helvetica", 12, "bold"))],
+            [
+                sg.Text("File size threshold (MB):"),
+                sg.Input(str(self.config.get("large_file_threshold_mb", 100)), 
+                        key="-SIZE_THRESHOLD-", size=(10, 1))
+            ],
+            [
+                sg.Text("File age threshold (days):"),
+                sg.Input(str(self.config.get("old_file_threshold_days", 365)), 
+                        key="-AGE_THRESHOLD-", size=(10, 1))
+            ],
+            [sg.Text("Exclude paths (one per line):")],
+            [sg.Multiline(default_text="\n".join(self.config.get("exclude_paths", [])), 
+                         key="-EXCLUDE_PATHS-", size=(50, 4))]
+        ]
+
+        # Buttons
+        buttons = [
+            [
+                sg.Button("Run Scan", key="-SCAN-", size=(12, 1)),
+                sg.Button("Generate Report", key="-REPORT-", size=(12, 1), disabled=True),
+                sg.Button("Save Settings", key="-SAVE_SETTINGS-", size=(12, 1))
+            ]
+        ]
+
+        # Results table
         results_section = [
-            [sg.Text("Scan Results:")],
+            [sg.Text("Scan Results:", font=("Helvetica", 12, "bold"))],
             [
                 sg.Table(
                     values=[],
-                    headings=["File Path", "Size (MB)", "Last Modified", "Type"],
+                    headings=["File Path", "Size", "Last Accessed", "Reason Flagged"],
                     auto_size_columns=True,
                     justification='left',
-                    num_rows=18,
-                    key="-RESULTS-",
-                    enable_events=True,
-                    expand_x=True,
-                    expand_y=True
+                    num_rows=15,
+                    key="-RESULTS_TABLE-",
+                    enable_events=True
                 )
             ]
         ]
-        
-        # Action Buttons
-        button_section = [
-            [
-                sg.Button("Run Scan", key="-SCAN-", bind_return_key=True),
-                sg.Button("Generate Report", key="-REPORT-", disabled=True),
-                sg.Button("Save Settings", key="-SAVE-"),
-                sg.Button("Exit")
-            ]
+
+        # Status
+        status = [
+            [sg.Text("Ready", key="-STATUS-", size=(80, 1))]
         ]
-        
-        # Progress Bar
-        progress_section = [
-            [sg.Text("Ready", key="-STATUS-")],
-            [sg.ProgressBar(100, orientation='h', size=(50, 20), key='-PROGRESS-')]
-        ]
-        
+
         # Combine all sections
         layout = [
-            [sg.Text("CleanSlate – Privacy-First File Scanner", font=("Helvetica", 16))],
-            [sg.HSeparator()],
+            header,
             [
-                sg.Column(file_section + settings_section, expand_y=True),
+                sg.Column(folder_section, vertical_alignment='top'),
                 sg.VSeparator(),
-                sg.Column(results_section, expand_x=True, expand_y=True)
+                sg.Column(settings_section, vertical_alignment='top')
             ],
             [sg.HSeparator()],
-            progress_section,
-            button_section
+            buttons,
+            [sg.HSeparator()],
+            results_section,
+            status
         ]
-        
+
         return layout
-    
+
     def _format_results_for_table(self, results: Dict) -> List[List[str]]:
         """Format scan results for the table display."""
         table_data = []
         
-        # Add duplicates
-        for group_name, files in results.get('duplicates', {}).items():
+        # Add duplicate files
+        for group_name, files in results.get("duplicates", {}).items():
             for file_path in files:
-                table_data.append([file_path, "-", "-", "Duplicate"])
-        
+                try:
+                    stat = os.stat(file_path)
+                    size = f"{stat.st_size:,} bytes"
+                    modified = datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M')
+                    table_data.append([file_path, size, modified, f"Duplicate ({group_name})"])
+                except (OSError, PermissionError):
+                    continue
+
         # Add large files
-        for file_path, size in results.get('large_files', []):
-            table_data.append([file_path, f"{size:.2f}", "-", "Large"])
-        
+        for file_path in results.get("large_files", []):
+            try:
+                stat = os.stat(file_path)
+                size = f"{stat.st_size:,} bytes"
+                modified = datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M')
+                table_data.append([file_path, size, modified, "Large file"])
+            except (OSError, PermissionError):
+                continue
+
         # Add old files
-        for file_path, date in results.get('old_files', []):
-            table_data.append([file_path, "-", date, "Old"])
-        
+        for file_path in results.get("old_files", []):
+            try:
+                stat = os.stat(file_path)
+                size = f"{stat.st_size:,} bytes"
+                modified = datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M')
+                table_data.append([file_path, size, modified, "Old file"])
+            except (OSError, PermissionError):
+                continue
+
         # Add empty files
-        for file_path in results.get('empty_files', []):
-            table_data.append([file_path, "0", "-", "Empty"])
-        
-        # Near-duplicates
-        for group, files in results.get('near_duplicates', {}).items():
+        for file_path in results.get("empty_files", []):
+            try:
+                stat = os.stat(file_path)
+                size = f"{stat.st_size:,} bytes"
+                modified = datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M')
+                table_data.append([file_path, size, modified, "Empty file"])
+            except (OSError, PermissionError):
+                continue
+
+        # Add near-duplicate images
+        for group_name, files in results.get("near_duplicates", {}).items():
             for file_path in files:
-                table_data.append([file_path, "-", "-", "Near-duplicate image"])
-        
-        # Blurry images
-        for file_path, score in results.get('blurry_files', []):
-            table_data.append([file_path, "-", f"Blur {score:.2f}", "Blurry image"])
-        
+                try:
+                    stat = os.stat(file_path)
+                    size = f"{stat.st_size:,} bytes"
+                    modified = datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M')
+                    table_data.append([file_path, size, modified, f"Near-duplicate image ({group_name})"])
+                except (OSError, PermissionError):
+                    continue
+
+        # Add blurry images
+        for file_path in results.get("blurry_files", []):
+            try:
+                stat = os.stat(file_path)
+                size = f"{stat.st_size:,} bytes"
+                modified = datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M')
+                table_data.append([file_path, size, modified, "Blurry image"])
+            except (OSError, PermissionError):
+                continue
+
         return table_data
-    
+
     def _update_config_from_values(self, values: Dict) -> None:
-        """Update config dictionary from GUI values."""
+        """Update internal config from GUI values."""
         try:
-            self.config["large_file_threshold_mb"] = float(values["-SIZE-"])
-            self.config["old_file_threshold_days"] = int(values["-DAYS-"])
-            self.config["directories_to_scan"] = list(values["-DIRS-"])
-            self.config["excluded_folders"] = list(values["-EXCLUDE-FOLDERS-"])
-            self.config["excluded_file_types"] = list(values["-EXCLUDE-TYPES-"])
-            exclude_paths_text = values.get("-EXCLUDE-PATHS-", "") or ""
-            exclude_paths = [line.strip() for line in exclude_paths_text.splitlines() if line.strip()]
-            self.config["exclude_paths"] = exclude_paths
-        except (ValueError, TypeError) as e:
-            sg.popup_error(f"Invalid setting value: {str(e)}")
-    
+            self.config["large_file_threshold_mb"] = int(values.get("-SIZE_THRESHOLD-", 100))
+        except ValueError:
+            pass
+
+        try:
+            self.config["old_file_threshold_days"] = int(values.get("-AGE_THRESHOLD-", 365))
+        except ValueError:
+            pass
+
+        # Parse exclude paths from multiline text
+        exclude_text = values.get("-EXCLUDE_PATHS-", "")
+        self.config["exclude_paths"] = [line.strip() for line in exclude_text.split('\n') if line.strip()]
+
     def _generate_html_report(self, results: Dict) -> None:
-        """Generate a simple HTML report from results."""
-        def html_escape(s: str) -> str:
-            return (s.replace("&", "&amp;")
-                     .replace("<", "&lt;")
-                     .replace(">", "&gt;")
-                     .replace('"', "&quot;")
-                     .replace("'", "&#39;"))
-        
-        sections = []
-        sections.append("<h1>CleanSlate Report</h1>")
-        sections.append("<h2>Summary</h2>")
-        sections.append(f"<p>Total files scanned: {results.get('total_files', 0)}</p>")
-        sections.append(f"<p>Duplicate groups: {len(results.get('duplicates', {}))}</p>")
-        sections.append(f"<p>Large files: {len(results.get('large_files', []))}</p>")
-        sections.append(f"<p>Old files: {len(results.get('old_files', []))}</p>")
-        sections.append(f"<p>Empty files: {len(results.get('empty_files', []))}</p>")
-        sections.append(f"<p>Near-duplicate image groups: {len(results.get('near_duplicates', {}))}</p>")
-        sections.append(f"<p>Blurry images: {len(results.get('blurry_files', []))}</p>")
-        
-        def list_section(title: str, rows: List[List[str]]):
-            html = [f"<h2>{html_escape(title)}</h2>"]
-            if not rows:
-                html.append("<p>None</p>")
-            else:
-                html.append("<ul>")
-                for r in rows:
-                    html.append(f"<li>{html_escape(' | '.join(r))}</li>")
-                html.append("</ul>")
-            return "\n".join(html)
-        
-        # Build sections
-        dup_rows = []
-        for group_name, files in results.get('duplicates', {}).items():
-            for file_path in files:
-                dup_rows.append([file_path])
-        sections.append(list_section("Duplicate Files", dup_rows))
-        
-        large_rows = [[fp, f"{size:.2f} MB"] for fp, size in results.get('large_files', [])]
-        sections.append(list_section("Large Files", large_rows))
-        
-        old_rows = [[fp, date] for fp, date in results.get('old_files', [])]
-        sections.append(list_section("Old Files", old_rows))
-        
-        empty_rows = [[fp] for fp in results.get('empty_files', [])]
-        sections.append(list_section("Empty Files", empty_rows))
-        
-        nd_rows = []
-        for group, files in results.get('near_duplicates', {}).items():
-            for fp in files:
-                nd_rows.append([fp])
-        sections.append(list_section("Near-duplicate Images", nd_rows))
-        
-        blurry_rows = [[fp, f"Blur {score:.2f}"] for fp, score in results.get('blurry_files', [])]
-        sections.append(list_section("Blurry Images", blurry_rows))
-        
-        html = """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>CleanSlate Report</title>
-<style>
- body { font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 24px; }
- h1 { margin-top: 0; }
- h2 { margin-top: 24px; }
- ul { padding-left: 20px; }
- li { margin: 4px 0; }
- .muted { color: #666; }
-</style>
-</head>
-<body>
-%s
-</body>
-</html>
-""" % ("\n".join(sections))
-        
-        with open(REPORT_HTML_FILE, "w", encoding="utf-8") as f:
-            f.write(html)
-    
+        """Generate HTML report from current results."""
+        try:
+            # Import the HTML generation function from core
+            from cleanslate_core import generate_html_report
+            
+            # Extract data for HTML report
+            duplicates_raw = list(results.get("duplicates", {}).values())
+            large_files = results.get("large_files", [])
+            old_files = results.get("old_files", [])
+            empty_files = results.get("empty_files", [])
+            near_duplicates = results.get("near_duplicates", {})
+            blurry_files = results.get("blurry_files", [])
+            
+            html_content = generate_html_report(
+                duplicates_raw, large_files, old_files,
+                empty_files, near_duplicates, blurry_files
+            )
+            
+            with open(REPORT_HTML_FILE, 'w') as f:
+                f.write(html_content)
+                
+        except Exception as e:
+            sg.popup_error(f"Failed to generate HTML report: {str(e)}")
+
     def run(self):
         """Run the main GUI event loop."""
         self.window = sg.Window(
-            "CleanSlate",
+            f"{APP_NAME}",
             self._create_layout(),
             resizable=True,
             finalize=True
         )
-        
+
         while True:
             event, values = self.window.read()
-            
+
             if event in (sg.WIN_CLOSED, "Exit"):
                 break
-                
-            elif event == "-ADD-":
-                folder = sg.popup_get_folder("Select Directory to Scan")
+
+            elif event == "-ADD_FOLDER-":
+                folder = sg.popup_get_folder("Choose folder to scan")
                 if folder:
-                    current = list(values["-DIRS-"])
-                    if folder not in current:
-                        current.append(folder)
-                        self.window["-DIRS-"].update(current)
-            
-            elif event == "-REMOVE-":
-                selected = values["-DIRS-"]
+                    current_folders = list(values.get("-FOLDERS-", []))
+                    if folder not in current_folders:
+                        current_folders.append(folder)
+                        self.window["-FOLDERS-"].update(current_folders)
+                        self.config["directories_to_scan"] = current_folders
+
+            elif event == "-REMOVE_FOLDER-":
+                selected = values.get("-FOLDERS-")
                 if selected:
-                    current = list(values["-DIRS-"])
-                    for item in selected:
-                        current.remove(item)
-                    self.window["-DIRS-"].update(current)
-            
-            elif event == "-ADD-FOLDER-":
-                folder = sg.popup_get_text("Enter folder name to exclude:")
-                if folder:
-                    current = list(values["-EXCLUDE-FOLDERS-"])
-                    if folder not in current:
-                        current.append(folder)
-                        self.window["-EXCLUDE-FOLDERS-"].update(current)
-            
-            elif event == "-REMOVE-FOLDER-":
-                selected = values["-EXCLUDE-FOLDERS-"]
-                if selected:
-                    current = list(values["-EXCLUDE-FOLDERS-"])
-                    for item in selected:
-                        current.remove(item)
-                    self.window["-EXCLUDE-FOLDERS-"].update(current)
-            
-            elif event == "-ADD-TYPE-":
-                file_type = sg.popup_get_text("Enter file extension to exclude (e.g. .tmp):")
-                if file_type:
-                    if not file_type.startswith("."):
-                        file_type = "." + file_type
-                    current = list(values["-EXCLUDE-TYPES-"])
-                    if file_type not in current:
-                        current.append(file_type)
-                        self.window["-EXCLUDE-TYPES-"].update(current)
-            
-            elif event == "-REMOVE-TYPE-":
-                selected = values["-EXCLUDE-TYPES-"]
-                if selected:
-                    current = list(values["-EXCLUDE-TYPES-"])
-                    for item in selected:
-                        current.remove(item)
-                    self.window["-EXCLUDE-TYPES-"].update(current)
-            
-            elif event == "-SAVE-":
-                self._update_config_from_values(values)
-                save_config(self.config)
-                sg.popup("Settings saved successfully!")
-            
+                    current_folders = list(values.get("-FOLDERS-", []))
+                    for folder in selected:
+                        if folder in current_folders:
+                            current_folders.remove(folder)
+                    self.window["-FOLDERS-"].update(current_folders)
+                    self.config["directories_to_scan"] = current_folders
+
             elif event == "-SCAN-":
+                if not self.config.get("directories_to_scan"):
+                    sg.popup_error("Please add at least one folder to scan!")
+                    continue
+
+                # Update config from GUI values
                 self._update_config_from_values(values)
                 
-                # Handle test mode
-                if values.get("-TESTMODE-", False):
-                    scan_dirs_backup = self.config.get("directories_to_scan", [])
-                    self.config["directories_to_scan"] = ["demo_data"]
-                else:
-                    scan_dirs_backup = None
-                
-                if not self.config["directories_to_scan"]:
-                    sg.popup_error("Please select at least one directory to scan!")
-                    # restore
-                    if scan_dirs_backup is not None:
-                        self.config["directories_to_scan"] = scan_dirs_backup
-                    continue
-                
-                self.window["-STATUS-"].update("Scanning... Please wait")
-                self.window["-PROGRESS-"].update(0)
+                # Save config
+                save_config(self.config)
+
+                # Run scan
+                self.window["-STATUS-"].update("Scanning... please wait")
+                self.window["-SCAN-"].update(disabled=True)
                 self.window.refresh()
-                
+
                 try:
-                    # Run the scan
                     self.current_results = run_scan(self.config)
                     
                     # Update results table
                     table_data = self._format_results_for_table(self.current_results)
-                    self.window["-RESULTS-"].update(table_data)
+                    self.window["-RESULTS_TABLE-"].update(table_data)
                     
                     # Enable report generation
                     self.window["-REPORT-"].update(disabled=False)
                     
-                    self.window["-STATUS-"].update("Scan complete!")
-                    self.window["-PROGRESS-"].update(100)
-                    
+                    # Update status
+                    total_files = self.current_results.get("total_files", 0)
+                    total_flagged = len(table_data)
+                    self.window["-STATUS-"].update(
+                        f"Scan complete! Found {total_files} files, {total_flagged} flagged for review."
+                    )
+
                 except Exception as e:
-                    sg.popup_error(f"Error during scan: {str(e)}")
+                    sg.popup_error(f"Scan failed: {str(e)}")
                     self.window["-STATUS-"].update("Scan failed!")
+
                 finally:
-                    # restore
-                    if scan_dirs_backup is not None:
-                        self.config["directories_to_scan"] = scan_dirs_backup
-            
+                    self.window["-SCAN-"].update(disabled=False)
+
             elif event == "-REPORT-":
-                if self.current_results:
-                    try:
-                        # Save HTML report using current results
-                        self._generate_html_report(self.current_results)
-                        sg.popup(f"Reports saved:\n{REPORT_FILE}\n{REPORT_HTML_FILE}")
-                    except Exception as e:
-                        sg.popup_error(f"Error generating reports: {str(e)}")
-                else:
-                    sg.popup_error("No scan results available. Please run a scan first.")
-        
+                if not self.current_results:
+                    sg.popup_error("No scan results to report!")
+                    continue
+
+                try:
+                    # Generate HTML report
+                    self._generate_html_report(self.current_results)
+                    
+                    sg.popup(f"Reports generated successfully!\n\n"
+                            f"Text report: {REPORT_FILE}\n"
+                            f"HTML report: {REPORT_HTML_FILE}")
+
+                except Exception as e:
+                    sg.popup_error(f"Failed to generate reports: {str(e)}")
+
+            elif event == "-SAVE_SETTINGS-":
+                self._update_config_from_values(values)
+                save_config(self.config)
+                sg.popup("Settings saved successfully!")
+
         self.window.close()
 
 
 def main():
-    """Main entry point for the GUI application."""
-    gui = CleanSlateGUI()
-    gui.run()
+    """Main entry point."""
+    try:
+        app = LocalMindGUI()
+        app.run()
+    except Exception as e:
+        sg.popup_error(f"Application error: {str(e)}")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CleanSlate Phase 2 - Backward Compatible Version
+LocalMind Phase 2 - Backward Compatible Version
 Privacy-first, offline file scanning tool with configuration and reporting.
 This version maintains Phase 2 compatibility while using Phase 3 core.
 """
@@ -20,7 +20,8 @@ from cleanslate_core import (
 
 def main():
     """Main execution function for Phase 2 compatibility."""
-    print("🧹 CleanSlate Phase 2 - File Scanner")
+    print("🧹 LocalMind Phase 2 - File Scanner")
+    print("Smart file cleanup. 100% offline. AI that tidies your computer without touching the cloud.")
     print("=" * 80)
     
     # Load configuration
