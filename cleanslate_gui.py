@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import List, Dict, Any
 import webbrowser
 import PySimpleGUI as sg
+import sys
+from datetime import datetime
 
 # Disable all icon handling (macOS-safe)
 try:
@@ -72,6 +74,25 @@ BTN_VIEW_LICENSE = "-BTN_VIEW_LICENSE-"
 EV_SCAN_PROGRESS = "-EV_SCAN_PROGRESS-"
 EV_SCAN_DONE = "-EV_SCAN_DONE-"
 EV_SCAN_ERROR = "-EV_SCAN_ERROR-"
+
+# Chat keys and events
+WORKSPACE_PICK = "-WORKSPACE_PICK-"
+BTN_NEW_CHAT = "-BTN_NEW_CHAT-"
+CHATS_LIST = "-CHATS_LIST-"
+CHAT_THREAD = "-CHAT_THREAD-"
+CHAT_INPUT = "-CHAT_INPUT-"
+CHAT_SEND = "-CHAT_SEND-"
+CHAT_QUICK = "-CHAT_QUICK-"
+INSPECT_TABS = "-INSPECT_TABS-"
+FILES_LIST = "-FILES_LIST-"
+PREVIEW_INFO = "-PREVIEW_INFO-"
+ACTIONS_FORM = "-ACTIONS_FORM-"
+TOOL_LARGEST = "-TOOL_LARGEST-"
+TOOL_DUPES = "-TOOL_DUPES-"
+TOOL_CLEANUP = "-TOOL_CLEANUP-"
+FILE_OPEN = "-FILE_OPEN-"
+FILE_REVEAL = "-FILE_REVEAL-"
+FILE_TRASH = "-FILE_TRASH-"
 
 APP_VERSION = "1.0.0"
 CONFIG_PATH = Path("config.json")
@@ -182,9 +203,71 @@ def build_layout(settings: Dict[str, Any]):
         [sg.Button("Open Logs", key=BTN_OPEN_LOGS), sg.Button("View License", key=BTN_VIEW_LICENSE)],
     ]
 
+    # Chat tab components
+    chat_header = [
+        [
+            sg.Text("Workspace:"),
+            sg.Input(key=WORKSPACE_PICK, size=(40,1), readonly=True, disabled=False, enable_events=False),
+            sg.FolderBrowse("Choose", target=WORKSPACE_PICK),
+            sg.Push(),
+            sg.Text("Model:"), sg.Combo(values=["Local"], default_value="Local", readonly=True, size=(12,1)),
+            sg.Button("Settings"), sg.Button("Help"),
+        ]
+    ]
+
+    conversations_panel = [
+        [sg.Button("New chat", key=BTN_NEW_CHAT)],
+        [sg.Listbox(values=[], size=(28, 20), key=CHATS_LIST, enable_events=True)],
+        [sg.Text("Filters:"), sg.Text("All  | With actions | Errors | Starred", text_color="gray")],
+        [sg.Text("Index: Idle", key="-INDEX_STATUS-", text_color="gray")],
+    ]
+
+    chat_center = [
+        [sg.Text("Ask about your files. For example: 'Find the largest 20 files in this folder.'", text_color="gray")],
+        [sg.Multiline(key=CHAT_THREAD, size=(60, 24), font=("Helvetica", 10), autoscroll=True, disabled=True, write_only=True)],
+        [
+            sg.Input(key=CHAT_INPUT, size=(50,2), expand_x=True, expand_y=False, placeholder_text="Ask about your files…"),
+            sg.ButtonMenu("Quick", [
+                ["Summarize current folder", CHAT_QUICK],
+                ["Find largest files", TOOL_LARGEST],
+                ["Find duplicates", TOOL_DUPES],
+                ["Generate cleanup plan", TOOL_CLEANUP],
+            ]),
+            sg.Button("Send", key=CHAT_SEND)
+        ]
+    ]
+
+    files_tab = [
+        [sg.Text("Files in workspace")],
+        [sg.Listbox(values=[], size=(40, 20), key=FILES_LIST, enable_events=True)],
+        [sg.Button("Open", key=FILE_OPEN), sg.Button("Reveal", key=FILE_REVEAL), sg.Button("Trash", key=FILE_TRASH)]
+    ]
+    preview_tab = [
+        [sg.Text("Preview / Metadata")],
+        [sg.Multiline(key=PREVIEW_INFO, size=(40, 22), disabled=True)]
+    ]
+    actions_tab = [
+        [sg.Text("Actions")],
+        [sg.Text("Find largest (count, min MB):"), sg.Input("20", size=(6,1), key="-ACT_COUNT-"), sg.Input("100", size=(6,1), key="-ACT_MINMB-")],
+        [sg.Button("Run", key=TOOL_LARGEST)],
+        [sg.HorizontalSeparator()],
+        [sg.Text("Find duplicates by size + partial hash"), sg.Button("Run", key=TOOL_DUPES)],
+    ]
+
+    inspector = [
+        [sg.TabGroup([[sg.Tab("Files", files_tab), sg.Tab("Preview", preview_tab), sg.Tab("Actions", actions_tab)]], key=INSPECT_TABS)]
+    ]
+
+    chat_tab = [
+        chat_header,
+        [sg.Column(conversations_panel, pad=((0, 12), 0), vertical_alignment='top'),
+         sg.Column(chat_center, expand_x=True, expand_y=True),
+         sg.Column(inspector, pad=((12, 0), 0), vertical_alignment='top')]
+    ]
+
     layout = [
         [sg.Text("LocalMind", font=("Helvetica", 16, "bold")), sg.Push(), sg.Button("Help", key="-HELP-")],
-        [sg.TabGroup([[sg.Tab("Scan", tab_scan), sg.Tab("Settings", tab_settings), sg.Tab("About", about_layout)]], expand_x=True, expand_y=True)],
+        [sg.TabGroup([[sg.Tab("Scan", tab_scan), sg.Tab("Settings", tab_settings), sg.Tab("About", about_layout), sg.Tab("Chat", chat_tab)]], expand_x=True, expand_y=True)],
     ]
     return layout
 
@@ -206,6 +289,10 @@ class LocalMindWindow:
         self.worker: threading.Thread | None = None
         self.latest_reports = {"txt": None, "html": None}
         self._enforce_demo_state()
+        # Chat state
+        self.workspace_path: str | None = None
+        self.conversations: list[dict] = []  # [{id, title, messages: [{role, text, citations: [paths]}]}]
+        self.active_conv_idx: int | None = None
 
     def _enforce_demo_state(self):
         demo = self.window[CHK_DEMO].get()
@@ -250,13 +337,13 @@ class LocalMindWindow:
             if event == "-HELP-":
                 sg.popup("LocalMind\nSmart file cleanup. 100% offline.")
 
+            # Demo toggle for Scan
             if event == CHK_DEMO:
                 self._enforce_demo_state()
 
-            if event == BTN_BROWSE:
-                # FolderBrowse element populates the input automatically
-                pass
+            # Scan browse handled by FolderBrowse
 
+            # Start Scan
             if event == BTN_RUN:
                 scan_path = values.get(INPUT_SCAN_PATH, "").strip()
                 demo_mode = values.get(CHK_DEMO, False)
@@ -290,12 +377,14 @@ class LocalMindWindow:
                 )
                 self.worker.start()
 
+            # Stop Scan
             if event == BTN_STOP:
                 self.cancel_event.set()
                 self.window[TXT_STATUS].update("Canceled")
                 self.window[BTN_RUN].update(disabled=False)
                 self.window[BTN_STOP].update(disabled=True)
 
+            # Open report
             if event == BTN_OPEN_REPORT:
                 # open text report first
                 if self.latest_reports.get("txt") and Path(self.latest_reports["txt"]).exists():
@@ -305,6 +394,7 @@ class LocalMindWindow:
                 else:
                     sg.popup("No report available yet.")
 
+            # Save/Reload/Defaults settings
             if event == BTN_SAVE_SETTINGS:
                 try:
                     new_settings = {
@@ -319,7 +409,6 @@ class LocalMindWindow:
                     sg.popup("Settings saved.")
                 except ValueError:
                     sg.popup_error("Please enter valid numbers for thresholds.")
-
             if event == BTN_RELOAD_SETTINGS:
                 self.settings = load_settings()
                 # refresh fields
@@ -329,7 +418,6 @@ class LocalMindWindow:
                 self.window[CHK_WRITE_TXT].update(self.settings["write_text_report"]) 
                 self.window[CHK_WRITE_HTML].update(self.settings["write_html_report"]) 
                 sg.popup("Settings reloaded.")
-
             if event == BTN_DEFAULTS:
                 if sg.popup_yes_no("Restore default settings?") == "Yes":
                     save_settings(DEFAULTS)
@@ -340,19 +428,18 @@ class LocalMindWindow:
                     self.window[CHK_WRITE_TXT].update(self.settings["write_text_report"]) 
                     self.window[CHK_WRITE_HTML].update(self.settings["write_html_report"]) 
 
+            # Logs / License
             if event == BTN_OPEN_LOGS:
                 if LOG_FILE.exists():
                     webbrowser.open(str(LOG_FILE.resolve()))
                 else:
                     sg.popup("No logs yet.")
-
             if event == BTN_VIEW_LICENSE:
                 sg.popup("License: Unlicensed (OK for testing)")
 
-            # Worker events
+            # Worker events for Scan
             if event == EV_SCAN_PROGRESS:
                 self._append_line(values.get(EV_SCAN_PROGRESS, ""))
-
             if event == EV_SCAN_DONE:
                 res = values.get(EV_SCAN_DONE, {})
                 self.window[BTN_RUN].update(disabled=False)
@@ -374,7 +461,224 @@ class LocalMindWindow:
                 self.window[TXT_STATUS].update("Error")
                 sg.popup_error(f"Scan error: {values.get(EV_SCAN_ERROR)}")
 
+            # Chat: workspace selected
+            if event == WORKSPACE_PICK:
+                self.workspace_path = values.get(WORKSPACE_PICK) or None
+                self._load_workspace_files()
+
+            # Chat: new chat
+            if event == BTN_NEW_CHAT:
+                self.conversations.append({"id": len(self.conversations)+1, "title": "New chat", "messages": []})
+                self.active_conv_idx = len(self.conversations)-1
+                self.window[CHATS_LIST].update(values=[self._conv_label(i,c) for i,c in enumerate(self.conversations)], set_to_index=self.active_conv_idx)
+                self._render_chat()
+
+            # Chat: select conversation
+            if event == CHATS_LIST:
+                selected = values.get(CHATS_LIST)
+                if selected:
+                    idx = [self._conv_label(i,c) for i,c in enumerate(self.conversations)].index(selected[0])
+                    self.active_conv_idx = idx
+                    self._render_chat()
+
+            # Chat: send message
+            if event in (CHAT_SEND,):
+                text = (values.get(CHAT_INPUT) or "").strip()
+                if not text:
+                    continue
+                if self.active_conv_idx is None:
+                    sg.popup_error("Create a chat first (New chat)")
+                    continue
+                conv = self.conversations[self.active_conv_idx]
+                conv["messages"].append({"role": "user", "text": text, "citations": []})
+                self.window[CHAT_INPUT].update("")
+                self._append_chat(f"You: {text}")
+                # Simple routing: quick heuristic
+                self._chat_handle_user(text)
+
+            # Chat quick actions
+            if event in (TOOL_LARGEST, TOOL_DUPES, TOOL_CLEANUP, CHAT_QUICK):
+                if self.active_conv_idx is None:
+                    sg.popup_error("Create a chat first (New chat)")
+                    continue
+                if not self.workspace_path:
+                    sg.popup_error("Choose a workspace folder in Chat header")
+                    continue
+                if event == TOOL_LARGEST:
+                    self._run_largest()
+                elif event == TOOL_DUPES:
+                    self._run_dupes()
+                elif event == TOOL_CLEANUP:
+                    self._run_cleanup_plan()
+
+            # Inspector file actions
+            if event == FILE_OPEN:
+                self._inspector_open(values)
+            if event == FILE_REVEAL:
+                self._inspector_reveal(values)
+            if event == FILE_TRASH:
+                self._inspector_trash(values)
+
         self.window.close()
+
+    # Chat helpers
+    def _conv_label(self, idx: int, conv: dict) -> str:
+        title = conv.get("title") or f"Chat {idx+1}"
+        return f"{title}"
+
+    def _render_chat(self):
+        self.window[CHAT_THREAD].update("")
+        if self.active_conv_idx is None:
+            return
+        conv = self.conversations[self.active_conv_idx]
+        for m in conv["messages"]:
+            prefix = "You" if m["role"] == "user" else "Assistant"
+            self._append_chat(f"{prefix}: {m['text']}")
+
+    def _append_chat(self, line: str):
+        self.window[CHAT_THREAD].print(line)
+
+    def _load_workspace_files(self):
+        try:
+            base = Path(self.workspace_path) if self.workspace_path else None
+            items = []
+            if base and base.exists():
+                for p in list(base.glob("*"))[:200]:
+                    try:
+                        size = p.stat().st_size
+                        items.append(f"{p.name}  ({size/1024/1024:.1f} MB)")
+                    except Exception:
+                        continue
+            self.window[FILES_LIST].update(items)
+        except Exception:
+            self.window[FILES_LIST].update([])
+
+    def _chat_handle_user(self, text: str):
+        t = text.lower()
+        if "largest" in t:
+            self._run_largest()
+        elif "duplicate" in t:
+            self._run_dupes()
+        else:
+            self._assistant_reply("I can help with largest files, duplicates, or a cleanup plan. Use Quick menu or ask directly.")
+
+    def _assistant_reply(self, text: str, citations: list[str] | None = None):
+        if self.active_conv_idx is None:
+            return
+        conv = self.conversations[self.active_conv_idx]
+        conv["messages"].append({"role": "assistant", "text": text, "citations": citations or []})
+        self._append_chat(f"Assistant: {text}")
+        if citations:
+            chips = " ".join([f"[{Path(c).name}]" for c in citations[:5]])
+            self._append_chat(f"Citations: {chips}")
+
+    def _run_largest(self):
+        try:
+            from cleanslate_core import find_large_files
+            size_mb = 100
+            try:
+                size_mb = int(self.window["-ACT_MINMB-"].get())
+            except Exception:
+                pass
+            paths = [self.workspace_path]
+            files = find_large_files(paths, size_mb)
+            # Sort by size desc
+            files = sorted(files, key=lambda p: Path(p).stat().st_size if Path(p).exists() else 0, reverse=True)
+            topn = 20
+            try:
+                topn = int(self.window["-ACT_COUNT-"].get())
+            except Exception:
+                pass
+            rows = []
+            for p in files[:topn]:
+                try:
+                    st = Path(p).stat()
+                    rows.append((Path(p).name, f"{st.st_size/1024/1024:.1f} MB", datetime.fromtimestamp(st.st_mtime).strftime('%Y-%m-%d'), p))
+                except Exception:
+                    continue
+            if not rows:
+                self._assistant_reply("No files matched the criteria.")
+                return
+            # Render simple table
+            table_lines = ["Name | Size | Modified | Path", "-----|------|----------|-----"]
+            for r in rows:
+                table_lines.append(f"{r[0]} | {r[1]} | {r[2]} | {r[3]}")
+            self._assistant_reply("\n".join(table_lines), citations=[r[3] for r in rows])
+        except Exception as e:
+            self._assistant_reply(f"Error: {e}")
+
+    def _run_dupes(self):
+        try:
+            from cleanslate_core import find_duplicates
+            paths = [self.workspace_path]
+            groups = find_duplicates(paths)
+            if not groups:
+                self._assistant_reply("No duplicate groups found.")
+                return
+            lines = ["Duplicate groups:"]
+            citations = []
+            for i, grp in enumerate(groups[:10], 1):
+                sizestr = "?"
+                try:
+                    sizestr = f"{Path(grp[0]).stat().st_size/1024/1024:.1f} MB"
+                except Exception:
+                    pass
+                lines.append(f"Group {i} ({len(grp)} files, {sizestr})")
+                for p in grp[:5]:
+                    lines.append(f"  - {p}")
+                citations.extend(grp)
+            self._assistant_reply("\n".join(lines), citations=citations[:20])
+        except Exception as e:
+            self._assistant_reply(f"Error: {e}")
+
+    def _run_cleanup_plan(self):
+        self._assistant_reply("Cleanup plan: coming soon.")
+
+    def _inspector_open(self, values: Dict[str, Any]):
+        sel = values.get(FILES_LIST)
+        if not sel or not self.workspace_path:
+            return
+        name = sel[0].split("  (",1)[0]
+        path = str(Path(self.workspace_path) / name)
+        try:
+            if sys.platform == 'darwin':
+                os.system(f"open '{path}'")
+            elif os.name == 'nt':
+                os.startfile(path)  # type: ignore
+            else:
+                os.system(f"xdg-open '{path}'")
+        except Exception:
+            pass
+
+    def _inspector_reveal(self, values: Dict[str, Any]):
+        sel = values.get(FILES_LIST)
+        if not sel or not self.workspace_path:
+            return
+        name = sel[0].split("  (",1)[0]
+        path = str(Path(self.workspace_path) / name)
+        try:
+            if sys.platform == 'darwin':
+                os.system(f"open -R '{path}'")
+        except Exception:
+            pass
+
+    def _inspector_trash(self, values: Dict[str, Any]):
+        try:
+            from send2trash import send2trash
+        except Exception:
+            return
+        sel = values.get(FILES_LIST)
+        if not sel or not self.workspace_path:
+            return
+        name = sel[0].split("  (",1)[0]
+        path = str(Path(self.workspace_path) / name)
+        if sg.popup_ok_cancel(f"Move to Trash?\n{path}") == "OK":
+            try:
+                send2trash(path)
+                sg.popup("Moved to Trash. Undo not implemented in MVP.")
+                self._load_workspace_files()
+            except Exception as e:
+                sg.popup_error(f"Failed to trash: {e}")
 
 
 def main():
