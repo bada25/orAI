@@ -1,0 +1,5 @@
+
+# This is a placeholder for the LocalMind icon
+# Replace this with your actual icon file
+# For macOS: .icns file
+# For Windows: .ico file

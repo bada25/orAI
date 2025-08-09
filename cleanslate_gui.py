@@ -1,409 +1,384 @@
 #!/usr/bin/env python3
 """
-LocalMind Phase 3 - GUI Interface
-Cross-platform GUI wrapper for the LocalMind file scanning engine.
+LocalMind GUI (PySimpleGUI) - Simple 3-tab interface per MVP spec.
 """
 
 import os
+os.environ["TK_SILENCE_DEPRECATION"] = "1"
 import json
+import threading
 from pathlib import Path
+from typing import List, Dict, Any
+import webbrowser
 import PySimpleGUI as sg
-from typing import Dict, List, Optional, Tuple
-from datetime import datetime
 
-# Suppress Tkinter deprecation warnings on macOS
-os.environ['TK_SILENCE_DEPRECATION'] = '1'
-
-# 1) Clear any global default icon PySimpleGUI might try to use
+# Disable all icon handling (macOS-safe)
 try:
-    sg.set_global_icon(None)  # Works on newer PySimpleGUI
+    sg.set_global_icon(None)
+except Exception:
+    pass
+try:
+    sg.set_options(icon=None, window_icon=None)
 except Exception:
     pass
 
-try:
-    sg.set_options(icon=None)  # Older helper that sometimes does not clear the default
-except Exception:
-    pass
-
-# 2) Hard-stop any attempt to set an icon on the window
 def _no_icon(self, *args, **kwargs):
     return
-
 try:
-    sg.Window._set_icon = _no_icon  # Monkey-patch the internal setter
-    sg.Window.set_icon = _no_icon   # Also patch the public method
+    sg.Window._set_icon = _no_icon
+    sg.Window.set_icon = _no_icon
 except Exception:
     pass
-
-# 3) Belt and suspenders for older versions that store a baked-in base64 icon
 try:
-    sg.DEFAULT_BASE64_ICON = None  # Prevent fallback base64 icon usage
+    sg.DEFAULT_BASE64_ICON = None
 except Exception:
     pass
-
-# 4) Nuclear option - patch tkinter.PhotoImage to prevent crashes
-import tkinter
-original_PhotoImage = tkinter.PhotoImage
-
-def safe_PhotoImage(*args, **kwargs):
-    """Safe PhotoImage that doesn't crash on malformed data."""
+try:
+    import tkinter
+    _orig_PhotoImage = tkinter.PhotoImage
+    def _safe_PhotoImage(*args, **kwargs):
+        try:
+            return _orig_PhotoImage(*args, **kwargs)
+        except Exception:
+            return _orig_PhotoImage(width=1, height=1)
+    tkinter.PhotoImage = _safe_PhotoImage
     try:
-        return original_PhotoImage(*args, **kwargs)
+        sg.Window.WindowIcon = None
     except Exception:
-        # Return a dummy image that won't crash
-        return original_PhotoImage(width=1, height=1)
-
-tkinter.PhotoImage = safe_PhotoImage
-
-# 5) Clear any window icon attributes
-try:
-    sg.Window.WindowIcon = None
+        pass
 except Exception:
     pass
 
-from cleanslate_core import (
-    load_config, save_config, run_scan,
-    REPORT_FILE, REPORT_HTML_FILE
-)
+# Keys
+INPUT_SCAN_PATH = "-INPUT_SCAN_PATH-"
+BTN_BROWSE = "-BTN_BROWSE-"
+CHK_DEMO = "-CHK_DEMO-"
+BTN_RUN = "-BTN_RUN-"
+BTN_STOP = "-BTN_STOP-"
+BTN_OPEN_REPORT = "-BTN_OPEN_REPORT-"
+TXT_STATUS = "-TXT_STATUS-"
+ML_RESULTS = "-ML_RESULTS-"
+TXT_SUMMARY = "-TXT_SUMMARY-"
+IN_SIZE_MB = "-IN_SIZE_MB-"
+IN_AGE_DAYS = "-IN_AGE_DAYS-"
+ML_EXCLUSIONS = "-ML_EXCLUSIONS-"
+CHK_WRITE_TXT = "-CHK_WRITE_TXT-"
+CHK_WRITE_HTML = "-CHK_WRITE_HTML-"
+BTN_SAVE_SETTINGS = "-BTN_SAVE_SETTINGS-"
+BTN_RELOAD_SETTINGS = "-BTN_RELOAD_SETTINGS-"
+BTN_DEFAULTS = "-BTN_DEFAULTS-"
+BTN_OPEN_LOGS = "-BTN_OPEN_LOGS-"
+BTN_VIEW_LICENSE = "-BTN_VIEW_LICENSE-"
+EV_SCAN_PROGRESS = "-EV_SCAN_PROGRESS-"
+EV_SCAN_DONE = "-EV_SCAN_DONE-"
+EV_SCAN_ERROR = "-EV_SCAN_ERROR-"
 
-# Constants
-APP_NAME = "LocalMind"
-DEFAULT_CONFIG = {
-    "directories_to_scan": [],
-    "large_file_threshold_mb": 100,
-    "old_file_threshold_days": 365,
-    "excluded_folders": [".git", "node_modules"],
-    "excluded_file_types": [".tmp", ".log"],
-    "exclude_paths": []
+APP_VERSION = "1.0.0"
+CONFIG_PATH = Path("config.json")
+LOG_DIR = Path("logs")
+LOG_FILE = LOG_DIR / "localmind.log"
+
+DEFAULTS = {
+    "size_threshold_mb": 50,
+    "age_threshold_days": 180,
+    "exclusions": [],
+    "write_text_report": True,
+    "write_html_report": True,
 }
 
 
-class LocalMindGUI:
-    """Main GUI wrapper for LocalMind."""
+def _log(msg: str) -> None:
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(msg + "\n")
+    except Exception:
+        pass
 
-    def __init__(self):
-        """Initialize the GUI with default settings."""
-        self.config = self._load_or_create_config()
-        self.current_results = None
-        self.window = None
 
-        # Set theme
-        sg.theme('LightGrey1')
-
-    def _load_or_create_config(self) -> Dict:
-        """Load existing config or create default config."""
+def load_settings() -> Dict[str, Any]:
+    if CONFIG_PATH.exists():
         try:
-            cfg = load_config()
-            # Ensure optional keys exist
-            if "exclude_paths" not in cfg:
-                cfg["exclude_paths"] = []
-            return cfg
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            # Translate possible Phase 2 keys
+            mapped = {
+                "size_threshold_mb": data.get("size_threshold_mb") or data.get("large_file_threshold_mb", 50),
+                "age_threshold_days": data.get("age_threshold_days") or data.get("old_file_threshold_days", 180),
+                "exclusions": data.get("exclusions") or data.get("exclude_paths") or data.get("excluded_file_types", []),
+                "write_text_report": data.get("write_text_report", True),
+                "write_html_report": data.get("write_html_report", True),
+            }
+            # Normalize list
+            if isinstance(mapped["exclusions"], str):
+                mapped["exclusions"] = [mapped["exclusions"]]
+            return {**DEFAULTS, **{k: v for k, v in mapped.items() if v is not None}}
         except Exception:
-            # Create default config
-            save_config(DEFAULT_CONFIG)
-            return DEFAULT_CONFIG.copy()
+            _log("load_settings error; using defaults")
+    save_settings(DEFAULTS)
+    return dict(DEFAULTS)
 
-    def _create_layout(self) -> List[List[sg.Element]]:
-        """Create the main window layout."""
-        # Header
-        header = [
-            [sg.Text(f"{APP_NAME}", font=("Helvetica", 16, "bold"))],
-            [sg.Text("Smart file cleanup. 100% offline. AI that tidies your computer without touching the cloud.", 
-                    font=("Helvetica", 10), text_color='gray')],
-            [sg.HSeparator()]
-        ]
 
-        # Folder selection
-        folder_section = [
-            [sg.Text("Select folders to scan:", font=("Helvetica", 12, "bold"))],
-            [sg.Listbox(values=self.config.get("directories_to_scan", []), 
-                       size=(60, 4), key="-FOLDERS-", enable_events=True)],
-            [
-                sg.Button("Add Folder", key="-ADD_FOLDER-"),
-                sg.Button("Remove Selected", key="-REMOVE_FOLDER-")
-            ]
-        ]
+def save_settings(settings: Dict[str, Any]) -> None:
+    try:
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=2)
+    except Exception as e:
+        _log(f"save_settings error: {e}")
 
-        # Settings
-        settings_section = [
-            [sg.Text("Settings:", font=("Helvetica", 12, "bold"))],
-            [
-                sg.Text("File size threshold (MB):"),
-                sg.Input(str(self.config.get("large_file_threshold_mb", 100)), 
-                        key="-SIZE_THRESHOLD-", size=(10, 1))
-            ],
-            [
-                sg.Text("File age threshold (days):"),
-                sg.Input(str(self.config.get("old_file_threshold_days", 365)), 
-                        key="-AGE_THRESHOLD-", size=(10, 1))
-            ],
-            [sg.Text("Exclude paths (one per line):")],
-            [sg.Multiline(default_text="\n".join(self.config.get("exclude_paths", [])), 
-                         key="-EXCLUDE_PATHS-", size=(50, 4))]
-        ]
 
-        # Buttons
-        buttons = [
-            [
-                sg.Button("Run Scan", key="-SCAN-", size=(12, 1)),
-                sg.Button("Generate Report", key="-REPORT-", size=(12, 1), disabled=True),
-                sg.Button("Save Settings", key="-SAVE_SETTINGS-", size=(12, 1))
-            ]
-        ]
+def build_layout(settings: Dict[str, Any]):
+    # Scan tab
+    left_col = [
+        [sg.Text("Select folder to scan.")],
+        [sg.Input(key=INPUT_SCAN_PATH, enable_events=False, readonly=True, size=(36, 1)),
+         sg.FolderBrowse("Browse", key=BTN_BROWSE)],
+        [sg.Checkbox("Demo mode", key=CHK_DEMO, enable_events=True)],
+        [sg.HorizontalSeparator()],
+        [sg.Text("Actions.")],
+        [sg.Button("Run Scan", key=BTN_RUN, size=(12, 1)),
+         sg.Button("Stop", key=BTN_STOP, size=(8, 1), disabled=True),
+         sg.Button("Open Report", key=BTN_OPEN_REPORT, size=(12, 1), disabled=True)],
+        [sg.Text("Status:"), sg.Text("Ready", key=TXT_STATUS, size=(40, 1))],
+    ]
+    right_col = [
+        [sg.Text("Results.")],
+        [sg.Multiline(key=ML_RESULTS, size=(70, 25), font=("Courier New", 10), autoscroll=True,
+                      write_only=True, disabled=True)],
+        [sg.Text("", key=TXT_SUMMARY, size=(60, 1))],
+    ]
+    tab_scan = [
+        [sg.Column(left_col, pad=((0, 16), (0, 0))), sg.Column(right_col, expand_y=True)],
+    ]
 
-        # Results table
-        results_section = [
-            [sg.Text("Scan Results:", font=("Helvetica", 12, "bold"))],
-            [
-                sg.Table(
-                    values=[],
-                    headings=["File Path", "Size", "Last Accessed", "Reason Flagged"],
-                    auto_size_columns=True,
-                    justification='left',
-                    num_rows=15,
-                    key="-RESULTS_TABLE-",
-                    enable_events=True
-                )
-            ]
-        ]
+    # Settings tab
+    left_set = [
+        [sg.Text("Scan thresholds.")],
+        [sg.Text("Size threshold (MB):"), sg.Input(str(settings["size_threshold_mb"]), key=IN_SIZE_MB, size=(8, 1))],
+        [sg.Text("Age threshold (days):"), sg.Input(str(settings["age_threshold_days"]), key=IN_AGE_DAYS, size=(8, 1))],
+        [sg.Text("Exclusions (one per line)\nExample: .DS_Store or node_modules")],
+        [sg.Multiline("\n".join(settings["exclusions"]), key=ML_EXCLUSIONS, size=(40, 6))],
+    ]
+    right_set = [
+        [sg.Text("Behavior.")],
+        [sg.Checkbox("Write text report after scan", key=CHK_WRITE_TXT, default=settings["write_text_report"])],
+        [sg.Checkbox("Write HTML report after scan", key=CHK_WRITE_HTML, default=settings["write_html_report"])],
+        [sg.Text("Reports: LocalMind_Report.txt / LocalMind_Report.html in project root")],
+        [sg.Push(), sg.Button("Save Settings", key=BTN_SAVE_SETTINGS), sg.Button("Reload Settings", key=BTN_RELOAD_SETTINGS),
+         sg.Button("Restore Defaults", key=BTN_DEFAULTS)],
+    ]
+    tab_settings = [[sg.Column(left_set, pad=((0, 16), (0, 0))), sg.Column(right_set, expand_y=True)]]
 
-        # Status
-        status = [
-            [sg.Text("Ready", key="-STATUS-", size=(80, 1))]
-        ]
+    # About tab
+    about_layout = [
+        [sg.Text("What LocalMind does", font=("Helvetica", 12, "bold"))],
+        [sg.Text("Smart file cleanup. 100% offline. Runs locally.")],
+        [sg.Text("Privacy", font=("Helvetica", 12, "bold"))],
+        [sg.Text("All scans run locally and do not leave your machine.")],
+        [sg.Text("Version", font=("Helvetica", 12, "bold"))],
+        [sg.Text(f"{APP_VERSION}")],
+        [sg.Text("Contact", font=("Helvetica", 12, "bold"))],
+        [sg.Text("support@localmindit.com (placeholder)")],
+        [sg.Button("Open Logs", key=BTN_OPEN_LOGS), sg.Button("View License", key=BTN_VIEW_LICENSE)],
+    ]
 
-        # Combine all sections
-        layout = [
-            header,
-            [
-                sg.Column(folder_section, vertical_alignment='top'),
-                sg.VSeparator(),
-                sg.Column(settings_section, vertical_alignment='top')
-            ],
-            [sg.HSeparator()],
-            buttons,
-            [sg.HSeparator()],
-            results_section,
-            status
-        ]
+    layout = [
+        [sg.Text("LocalMind", font=("Helvetica", 16, "bold")), sg.Push(), sg.Button("Help", key="-HELP-")],
+        [sg.TabGroup([[sg.Tab("Scan", tab_scan), sg.Tab("Settings", tab_settings), sg.Tab("About", about_layout)]], expand_x=True, expand_y=True)],
+    ]
+    return layout
 
-        return layout
 
-    def _format_results_for_table(self, results: Dict) -> List[List[str]]:
-        """Format scan results for the table display."""
-        table_data = []
-        
-        # Add duplicate files
-        for group_name, files in results.get("duplicates", {}).items():
-            for file_path in files:
-                try:
-                    stat = os.stat(file_path)
-                    size = f"{stat.st_size:,} bytes"
-                    modified = datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M')
-                    table_data.append([file_path, size, modified, f"Duplicate ({group_name})"])
-                except (OSError, PermissionError):
-                    continue
+class LocalMindWindow:
+    def __init__(self):
+        sg.theme("SystemDefault")
+        self.settings = load_settings()
+        self.window = sg.Window(
+            "LocalMind",
+            build_layout(self.settings),
+            size=(800, 600),
+            resizable=True,
+            margins=(16, 16),
+            finalize=True,
+        )
+        self.window[ML_RESULTS].Widget.configure(state="normal")
+        self.cancel_event: threading.Event = threading.Event()
+        self.worker: threading.Thread | None = None
+        self.latest_reports = {"txt": None, "html": None}
+        self._enforce_demo_state()
 
-        # Add large files
-        for file_path in results.get("large_files", []):
-            try:
-                stat = os.stat(file_path)
-                size = f"{stat.st_size:,} bytes"
-                modified = datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M')
-                table_data.append([file_path, size, modified, "Large file"])
-            except (OSError, PermissionError):
-                continue
+    def _enforce_demo_state(self):
+        demo = self.window[CHK_DEMO].get()
+        self.window[INPUT_SCAN_PATH].update(disabled=demo)
+        if demo:
+            self.window[INPUT_SCAN_PATH].update("./demo_data")
 
-        # Add old files
-        for file_path in results.get("old_files", []):
-            try:
-                stat = os.stat(file_path)
-                size = f"{stat.st_size:,} bytes"
-                modified = datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M')
-                table_data.append([file_path, size, modified, "Old file"])
-            except (OSError, PermissionError):
-                continue
+    def _append_line(self, line: str):
+        self.window[ML_RESULTS].print(line)
 
-        # Add empty files
-        for file_path in results.get("empty_files", []):
-            try:
-                stat = os.stat(file_path)
-                size = f"{stat.st_size:,} bytes"
-                modified = datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M')
-                table_data.append([file_path, size, modified, "Empty file"])
-            except (OSError, PermissionError):
-                continue
-
-        # Add near-duplicate images
-        for group_name, files in results.get("near_duplicates", {}).items():
-            for file_path in files:
-                try:
-                    stat = os.stat(file_path)
-                    size = f"{stat.st_size:,} bytes"
-                    modified = datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M')
-                    table_data.append([file_path, size, modified, f"Near-duplicate image ({group_name})"])
-                except (OSError, PermissionError):
-                    continue
-
-        # Add blurry images
-        for file_path in results.get("blurry_files", []):
-            try:
-                stat = os.stat(file_path)
-                size = f"{stat.st_size:,} bytes"
-                modified = datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M')
-                table_data.append([file_path, size, modified, "Blurry image"])
-            except (OSError, PermissionError):
-                continue
-
-        return table_data
-
-    def _update_config_from_values(self, values: Dict) -> None:
-        """Update internal config from GUI values."""
+    def _scan_worker(self, scan_path: str, thresholds: Dict[str, int], exclusions: List[str], write_txt: bool, write_html: bool):
         try:
-            self.config["large_file_threshold_mb"] = int(values.get("-SIZE_THRESHOLD-", 100))
-        except ValueError:
-            pass
+            from cleanslate_core import scan_folder
 
-        try:
-            self.config["old_file_threshold_days"] = int(values.get("-AGE_THRESHOLD-", 365))
-        except ValueError:
-            pass
+            def progress_cb(line: str):
+                self.window.write_event_value(EV_SCAN_PROGRESS, line)
 
-        # Parse exclude paths from multiline text
-        exclude_text = values.get("-EXCLUDE_PATHS-", "")
-        self.config["exclude_paths"] = [line.strip() for line in exclude_text.split('\n') if line.strip()]
-
-    def _generate_html_report(self, results: Dict) -> None:
-        """Generate HTML report from current results."""
-        try:
-            # Import the HTML generation function from core
-            from cleanslate_core import generate_html_report
-            
-            # Extract data for HTML report
-            duplicates_raw = list(results.get("duplicates", {}).values())
-            large_files = results.get("large_files", [])
-            old_files = results.get("old_files", [])
-            empty_files = results.get("empty_files", [])
-            near_duplicates = results.get("near_duplicates", {})
-            blurry_files = results.get("blurry_files", [])
-            
-            html_content = generate_html_report(
-                duplicates_raw, large_files, old_files,
-                empty_files, near_duplicates, blurry_files
+            results = scan_folder(
+                scan_path,
+                thresholds["size_threshold_mb"],
+                thresholds["age_threshold_days"],
+                exclusions,
+                write_txt,
+                write_html,
+                self.cancel_event,
+                progress_cb,
             )
-            
-            with open(REPORT_HTML_FILE, 'w') as f:
-                f.write(html_content)
-                
+            self.window.write_event_value(EV_SCAN_DONE, results)
         except Exception as e:
-            sg.popup_error(f"Failed to generate HTML report: {str(e)}")
+            self.window.write_event_value(EV_SCAN_ERROR, str(e))
 
     def run(self):
-        """Run the main GUI event loop."""
-        self.window = sg.Window(
-            f"{APP_NAME}",
-            self._create_layout(),
-            resizable=True,
-            finalize=True
-        )
-
         while True:
-            event, values = self.window.read()
-
+            event, values = self.window.read(timeout=200)
             if event in (sg.WIN_CLOSED, "Exit"):
+                # cancel worker if running
+                if self.worker and self.worker.is_alive():
+                    self.cancel_event.set()
+                    self.worker.join(timeout=2)
                 break
 
-            elif event == "-ADD_FOLDER-":
-                folder = sg.popup_get_folder("Choose folder to scan")
-                if folder:
-                    current_folders = list(values.get("-FOLDERS-", []))
-                    if folder not in current_folders:
-                        current_folders.append(folder)
-                        self.window["-FOLDERS-"].update(current_folders)
-                        self.config["directories_to_scan"] = current_folders
+            if event == "-HELP-":
+                sg.popup("LocalMind\nSmart file cleanup. 100% offline.")
 
-            elif event == "-REMOVE_FOLDER-":
-                selected = values.get("-FOLDERS-")
-                if selected:
-                    current_folders = list(values.get("-FOLDERS-", []))
-                    for folder in selected:
-                        if folder in current_folders:
-                            current_folders.remove(folder)
-                    self.window["-FOLDERS-"].update(current_folders)
-                    self.config["directories_to_scan"] = current_folders
+            if event == CHK_DEMO:
+                self._enforce_demo_state()
 
-            elif event == "-SCAN-":
-                if not self.config.get("directories_to_scan"):
-                    sg.popup_error("Please add at least one folder to scan!")
+            if event == BTN_BROWSE:
+                # FolderBrowse element populates the input automatically
+                pass
+
+            if event == BTN_RUN:
+                scan_path = values.get(INPUT_SCAN_PATH, "").strip()
+                demo_mode = values.get(CHK_DEMO, False)
+                if demo_mode:
+                    scan_path = "./demo_data"
+                if not scan_path or not Path(scan_path).exists():
+                    sg.popup_error("Please select a folder or enable Demo mode.")
                     continue
-
-                # Update config from GUI values
-                self._update_config_from_values(values)
-                
-                # Save config
-                save_config(self.config)
-
-                # Run scan
-                self.window["-STATUS-"].update("Scanning... please wait")
-                self.window["-SCAN-"].update(disabled=True)
-                self.window.refresh()
-
+                # Parse settings
                 try:
-                    self.current_results = run_scan(self.config)
-                    
-                    # Update results table
-                    table_data = self._format_results_for_table(self.current_results)
-                    self.window["-RESULTS_TABLE-"].update(table_data)
-                    
-                    # Enable report generation
-                    self.window["-REPORT-"].update(disabled=False)
-                    
-                    # Update status
-                    total_files = self.current_results.get("total_files", 0)
-                    total_flagged = len(table_data)
-                    self.window["-STATUS-"].update(
-                        f"Scan complete! Found {total_files} files, {total_flagged} flagged for review."
-                    )
-
-                except Exception as e:
-                    sg.popup_error(f"Scan failed: {str(e)}")
-                    self.window["-STATUS-"].update("Scan failed!")
-
-                finally:
-                    self.window["-SCAN-"].update(disabled=False)
-
-            elif event == "-REPORT-":
-                if not self.current_results:
-                    sg.popup_error("No scan results to report!")
+                    size_mb = int(values.get(IN_SIZE_MB, self.settings["size_threshold_mb"]))
+                    age_days = int(values.get(IN_AGE_DAYS, self.settings["age_threshold_days"]))
+                except ValueError:
+                    sg.popup_error("Please enter valid numbers for thresholds.")
                     continue
+                exclusions_text = values.get(ML_EXCLUSIONS, "") or ""
+                exclusions = [ln.strip() for ln in exclusions_text.splitlines() if ln.strip()]
+                write_txt = bool(values.get(CHK_WRITE_TXT, True))
+                write_html = bool(values.get(CHK_WRITE_HTML, True))
 
+                # Start worker
+                self.window[BTN_RUN].update(disabled=True)
+                self.window[BTN_STOP].update(disabled=False)
+                self.window[TXT_STATUS].update("Scanning")
+                self.window[ML_RESULTS].update("")
+                self.cancel_event.clear()
+                self.worker = threading.Thread(
+                    target=self._scan_worker,
+                    args=(scan_path, {"size_threshold_mb": size_mb, "age_threshold_days": age_days}, exclusions, write_txt, write_html),
+                    daemon=True,
+                )
+                self.worker.start()
+
+            if event == BTN_STOP:
+                self.cancel_event.set()
+                self.window[TXT_STATUS].update("Canceled")
+                self.window[BTN_RUN].update(disabled=False)
+                self.window[BTN_STOP].update(disabled=True)
+
+            if event == BTN_OPEN_REPORT:
+                # open text report first
+                if self.latest_reports.get("txt") and Path(self.latest_reports["txt"]).exists():
+                    webbrowser.open(self.latest_reports["txt"])  # default editor
+                elif self.latest_reports.get("html") and Path(self.latest_reports["html"]).exists():
+                    webbrowser.open(self.latest_reports["html"])  # browser
+                else:
+                    sg.popup("No report available yet.")
+
+            if event == BTN_SAVE_SETTINGS:
                 try:
-                    # Generate HTML report
-                    self._generate_html_report(self.current_results)
-                    
-                    sg.popup(f"Reports generated successfully!\n\n"
-                            f"Text report: {REPORT_FILE}\n"
-                            f"HTML report: {REPORT_HTML_FILE}")
+                    new_settings = {
+                        "size_threshold_mb": int(values.get(IN_SIZE_MB, self.settings["size_threshold_mb"])),
+                        "age_threshold_days": int(values.get(IN_AGE_DAYS, self.settings["age_threshold_days"])),
+                        "exclusions": [ln.strip() for ln in (values.get(ML_EXCLUSIONS, "") or "").splitlines() if ln.strip()],
+                        "write_text_report": bool(values.get(CHK_WRITE_TXT, True)),
+                        "write_html_report": bool(values.get(CHK_WRITE_HTML, True)),
+                    }
+                    save_settings(new_settings)
+                    self.settings = new_settings
+                    sg.popup("Settings saved.")
+                except ValueError:
+                    sg.popup_error("Please enter valid numbers for thresholds.")
 
-                except Exception as e:
-                    sg.popup_error(f"Failed to generate reports: {str(e)}")
+            if event == BTN_RELOAD_SETTINGS:
+                self.settings = load_settings()
+                # refresh fields
+                self.window[IN_SIZE_MB].update(str(self.settings["size_threshold_mb"]))
+                self.window[IN_AGE_DAYS].update(str(self.settings["age_threshold_days"]))
+                self.window[ML_EXCLUSIONS].update("\n".join(self.settings["exclusions"]))
+                self.window[CHK_WRITE_TXT].update(self.settings["write_text_report"]) 
+                self.window[CHK_WRITE_HTML].update(self.settings["write_html_report"]) 
+                sg.popup("Settings reloaded.")
 
-            elif event == "-SAVE_SETTINGS-":
-                self._update_config_from_values(values)
-                save_config(self.config)
-                sg.popup("Settings saved successfully!")
+            if event == BTN_DEFAULTS:
+                if sg.popup_yes_no("Restore default settings?") == "Yes":
+                    save_settings(DEFAULTS)
+                    self.settings = dict(DEFAULTS)
+                    self.window[IN_SIZE_MB].update(str(self.settings["size_threshold_mb"]))
+                    self.window[IN_AGE_DAYS].update(str(self.settings["age_threshold_days"]))
+                    self.window[ML_EXCLUSIONS].update("\n".join(self.settings["exclusions"]))
+                    self.window[CHK_WRITE_TXT].update(self.settings["write_text_report"]) 
+                    self.window[CHK_WRITE_HTML].update(self.settings["write_html_report"]) 
+
+            if event == BTN_OPEN_LOGS:
+                if LOG_FILE.exists():
+                    webbrowser.open(str(LOG_FILE.resolve()))
+                else:
+                    sg.popup("No logs yet.")
+
+            if event == BTN_VIEW_LICENSE:
+                sg.popup("License: Unlicensed (OK for testing)")
+
+            # Worker events
+            if event == EV_SCAN_PROGRESS:
+                self._append_line(values.get(EV_SCAN_PROGRESS, ""))
+
+            if event == EV_SCAN_DONE:
+                res = values.get(EV_SCAN_DONE, {})
+                self.window[BTN_RUN].update(disabled=False)
+                self.window[BTN_STOP].update(disabled=True)
+                self.window[TXT_STATUS].update("Scan complete")
+                total = res.get("total_files", 0)
+                large = res.get("large_count", 0)
+                old = res.get("old_count", 0)
+                dups = res.get("dup_groups", 0)
+                self.window[TXT_SUMMARY].update(f"Files scanned {total}. Large {large}. Old {old}. Duplicate groups {dups}.")
+                self.latest_reports["txt"] = res.get("report_txt_path")
+                self.latest_reports["html"] = res.get("report_html_path")
+                if self.latest_reports["txt"] or self.latest_reports["html"]:
+                    self.window[BTN_OPEN_REPORT].update(disabled=False)
+
+            if event == EV_SCAN_ERROR:
+                self.window[BTN_RUN].update(disabled=False)
+                self.window[BTN_STOP].update(disabled=True)
+                self.window[TXT_STATUS].update("Error")
+                sg.popup_error(f"Scan error: {values.get(EV_SCAN_ERROR)}")
 
         self.window.close()
 
 
 def main():
-    """Main entry point."""
-    try:
-        app = LocalMindGUI()
-        app.run()
-    except Exception as e:
-        sg.popup_error(f"Application error: {str(e)}")
-
+    LocalMindWindow().run()
 
 if __name__ == "__main__":
     main() 

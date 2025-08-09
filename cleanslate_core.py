@@ -37,6 +37,165 @@ DEFAULT_CONFIG = {
     "excluded_file_types": [".tmp", ".log"]
 }
 
+# Logging and scan-folder helpers for GUI contract
+from threading import Event
+
+LOG_DIR = Path("logs")
+LOG_FILE = LOG_DIR / "localmind.log"
+
+
+def _log_message(message: str) -> None:
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(f"{datetime.now().isoformat()} | {message}\n")
+    except Exception:
+        pass
+
+
+def _hash_first_chunk(file_path: str, chunk_size: int = 4 * 1024 * 1024) -> str:
+    try:
+        h = hashlib.md5()
+        with open(file_path, "rb") as f:
+            chunk = f.read(chunk_size)
+            h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return ""
+
+
+def scan_folder(
+    scan_path: str,
+    size_threshold_mb: int,
+    age_threshold_days: int,
+    exclusions: List[str],
+    write_text_report: bool,
+    write_html_report: bool,
+    cancel_event: Event,
+    progress_callback: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """Scan a single folder and return results per GUI contract.
+
+    Returns dict with keys:
+      total_files, large_count, old_count, dup_groups, lines, report_txt_path, report_html_path
+    """
+    _log_message(f"scan_folder start: path={scan_path}")
+    results: Dict[str, Any] = {
+        "total_files": 0,
+        "large_count": 0,
+        "old_count": 0,
+        "dup_groups": 0,
+        "lines": [],
+        "report_txt_path": None,
+        "report_html_path": None,
+    }
+
+    try:
+        base_path = Path(scan_path)
+        if not base_path.exists() or not base_path.is_dir():
+            _log_message("scan_folder: path not readable")
+            return results
+
+        # Gather files with simple exclusions (substring match)
+        files: List[Path] = []
+        for root, dirs, filenames in os.walk(base_path):
+            if cancel_event.is_set():
+                _log_message("scan_folder: canceled during walk")
+                return results
+            # Apply exclusions to directories by substring
+            dirs[:] = [d for d in dirs if not any(excl in os.path.join(root, d) for excl in exclusions)]
+            for fn in filenames:
+                fp = Path(root) / fn
+                if any(excl in str(fp) for excl in exclusions):
+                    continue
+                files.append(fp)
+
+        results["total_files"] = len(files)
+
+        threshold_bytes = size_threshold_mb * 1024 * 1024
+        cutoff_time = datetime.now() - timedelta(days=age_threshold_days)
+
+        # Duplicate grouping by (size, first_4mb_hash)
+        group_map: Dict[Tuple[int, str], List[Path]] = {}
+
+        for fp in files:
+            if cancel_event.is_set():
+                _log_message("scan_folder: canceled during file loop")
+                return results
+            try:
+                st = fp.stat()
+            except OSError:
+                continue
+
+            size_bytes = st.st_size
+            mtime = datetime.fromtimestamp(st.st_mtime)
+
+            # Large
+            if size_bytes >= threshold_bytes:
+                line = f"[LARGE] {size_bytes/1024/1024:.2f} MB {str(fp)}"
+                results["lines"].append(line)
+                if progress_callback:
+                    progress_callback(line)
+                results["large_count"] += 1
+
+            # Old
+            if mtime < cutoff_time:
+                line = f"[OLD] {size_bytes/1024/1024:.2f} MB {str(fp)} modified {mtime.strftime('%Y-%m-%d')}"
+                results["lines"].append(line)
+                if progress_callback:
+                    progress_callback(line)
+                results["old_count"] += 1
+
+            # Prepare duplicates grouping
+            size_hash_key = (size_bytes, _hash_first_chunk(str(fp)))
+            group_map.setdefault(size_hash_key, []).append(fp)
+
+        # Build duplicate groups
+        dup_groups: List[List[str]] = []
+        for key, group in group_map.items():
+            if cancel_event.is_set():
+                _log_message("scan_folder: canceled during dup grouping")
+                return results
+            if len(group) > 1:
+                dup_list = [str(p) for p in group]
+                dup_groups.append(dup_list)
+                # Add a DUP summary line
+                line = f"[DUP] {len(group)} files group size {key[0]:,} hash {key[1][:8]}..."
+                results["lines"].append(line)
+                if progress_callback:
+                    progress_callback(line)
+
+        results["dup_groups"] = len(dup_groups)
+
+        # Write reports if requested
+        report_txt_path = None
+        report_html_path = None
+        if write_text_report:
+            try:
+                report_text = generate_report(dup_groups, [], [], [], {}, [])
+                with open(REPORT_FILE, "w", encoding="utf-8") as f:
+                    f.write(report_text)
+                report_txt_path = str(Path(REPORT_FILE).resolve())
+            except Exception as e:
+                _log_message(f"write text report error: {e}")
+        if write_html_report:
+            try:
+                html_text = generate_html_report(dup_groups, [], [], [], {}, [])
+                with open(REPORT_HTML_FILE, "w", encoding="utf-8") as f:
+                    f.write(html_text)
+                report_html_path = str(Path(REPORT_HTML_FILE).resolve())
+            except Exception as e:
+                _log_message(f"write html report error: {e}")
+
+        results["report_txt_path"] = report_txt_path
+        results["report_html_path"] = report_html_path
+        _log_message("scan_folder done")
+        return results
+
+    except Exception as e:
+        _log_message(f"scan_folder exception: {e}")
+        return results
+
 
 def load_config() -> Dict:
     """Load configuration from config.json file."""

@@ -1,0 +1,25 @@
+
+# LocalMind 1.0.0 Installation Instructions
+
+## macOS
+1. Download the LocalMind.app file
+2. Drag LocalMind.app to your Applications folder
+3. Right-click and select "Open" the first time (to bypass Gatekeeper)
+4. Launch LocalMind from Applications
+
+## Windows
+1. Download the LocalMind.exe file
+2. Run LocalMind.exe
+3. Windows may show a security warning - click "More info" then "Run anyway"
+
+## License Activation
+1. Launch LocalMind
+2. Enter your license key when prompted
+3. You can purchase LocalMind at localmindit.com
+
+## Support
+- Website: localmindit.com
+- Privacy Policy: localmindit.com/privacy
+- 30-day money-back guarantee
+
+LocalMind - Smart file cleanup. 100% offline. AI that tidies your computer without touching the cloud.

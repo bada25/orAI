@@ -1,0 +1,6 @@
+# LocalMind - Smart file cleanup application
+# Requirements for LocalMind desktop application
+
+PySimpleGUI>=4.60.5
+send2trash>=1.8.2
+pyinstaller>=5.0.0 

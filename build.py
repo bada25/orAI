@@ -139,8 +139,14 @@ def create_release_package():
     dist_dir = Path("dist")
     if dist_dir.exists():
         for item in dist_dir.iterdir():
-            if item.is_file() or item.is_dir():
-                shutil.copy2(item, release_dir / item.name)
+            target = release_dir / item.name
+            if item.is_dir():
+                # Copy app bundles or folders recursively
+                if target.exists():
+                    shutil.rmtree(target)
+                shutil.copytree(item, target)
+            elif item.is_file():
+                shutil.copy2(item, target)
     
     # Copy documentation
     docs = ["README.md", "requirements.txt", "LICENSE"]
